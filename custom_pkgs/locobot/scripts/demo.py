@@ -16,16 +16,12 @@ from std_msgs.msg import Header
 from sensor_msgs.msg import Image, CameraInfo, PointCloud2, PointField
 import sensor_msgs.point_cloud2 as pc2
 from geometry_msgs.msg import *
-from moveit_msgs.msg import OrientationConstraint, Constraints
+from moveit_msgs.msg import *
 
 import tf2_geometry_msgs
 
-from ultralytics import YOLO
-
 # custom srv
-from locobot.srv import SetPose2D, SetFloat32
-from perception_service.srv import GraspInfer, GraspInferRequest, GraspInferResponse
-from perception_service.srv import GroundedSam2Infer, GroundedSam2InferRequest, GroundedSam2InferResponse
+from locobot.srv import *
 
 # custom python module
 from arm_control import LocobotArm
@@ -33,6 +29,8 @@ from camera_control import LocobotCamera
 from chassis_control import LocobotChassis
 from wbc import WBC, CartMPC
 
+import client
+from data_models import AnygraspRequest, AnygraspResponse, GsamRequest, GsamResponse
 
 np.set_printoptions(precision=3, suppress=True)
 
@@ -123,7 +121,9 @@ class Demo:
         self.wait_services()
 
     def init_vars(self):
-        cam_info: CameraInfo = rospy.wait_for_message("/locobot/camera/color/camera_info", CameraInfo)
+        cam_info: CameraInfo = rospy.wait_for_message(
+            "/locobot/camera/color/camera_info", CameraInfo
+        )
         # params
         self.t0 = rospy.Time.now()
         self.map = {}
@@ -147,9 +147,6 @@ class Demo:
         self.tf_pub = tf2_ros.TransformBroadcaster()
         self.tf_spub = tf2_ros.StaticTransformBroadcaster()
 
-        # YOLO object
-        # self.model = YOLO()
-
     def init_caller(self):
         # actuation API
         self.arm = LocobotArm(serving=False)
@@ -157,64 +154,55 @@ class Demo:
         self.chas = LocobotChassis(serving=False)
         self.gripper_ctl = rospy.ServiceProxy("/locobot/gripper_control", SetBool)
         # perception API
-        self.grasp_det = rospy.ServiceProxy("/grasp_infer", GraspInfer)
-        self.seg_det = rospy.ServiceProxy("/grounded_sam2_infer", GroundedSam2Infer)
+        self.anygrasp_proxy = client.ServiceProxy(
+            AnygraspRequest, AnygraspResponse, "192.168.1.5", 8002
+        )
+        self.gsam_proxy = client.ServiceProxy(
+            GsamRequest, GsamResponse, "192.168.1.5", 8001
+        )
         # visualization
-        self.pub_cld = rospy.Publisher("/locobot/point_cloud", PointCloud2, queue_size=1)  # for visualization and debug
+        self.pub_cld = rospy.Publisher(
+            "/locobot/point_cloud", PointCloud2, queue_size=1
+        )  # for visualization and debug
 
     def wait_services(self):
         rospy.Subscriber("/locobot/camera/color/image_raw", Image, self.on_rec_img)
-        rospy.Subscriber("/locobot/camera/aligned_depth_to_color/image_raw", Image, self.on_rec_depth)
+        rospy.Subscriber(
+            "/locobot/camera/aligned_depth_to_color/image_raw", Image, self.on_rec_depth
+        )
 
         rospy.wait_for_service("/locobot/arm_control")
         print("all_control.py is up")
         rospy.wait_for_message("/locobot/camera/color/image_raw", Image)
-        rospy.wait_for_message("/locobot/camera/aligned_depth_to_color/image_raw", Image)
+        rospy.wait_for_message(
+            "/locobot/camera/aligned_depth_to_color/image_raw", Image
+        )
         print("RGBD camera is up")
         # rospy.wait_for_service("/grasp_infer")
         # print("GraspNet is up")
         # rospy.wait_for_service("/grounded_sam2_infer")
         # print("grounded_sam is up")
 
-    def main_dev(self):
-        with self.lock_rgb:
-            rgb = deepcopy(self.img_rgb)
-        with self.lock_dep:
-            cld = deepcopy(self.cld)
-
-        _ = self.model.predict(rgb)
-
-        # TODO: a list of [label, mask]
-        ...
-        results = []
-        ...
-
-        for label, mask in results:
-            pts = cld[np.nonzero(mask)]  # (n, 3)
-            pts = pts[np.nonzero(pts[2] > 0.1), :]  # filter out points with depth < 0.1
-            pos = pts.mean()
-            t = transform_vec(self.tf_buf, self.coord_map, self.coord_cam, Vector3(*pos))
-            pos_glb = np.array([t.x, t.y, t.z])
-            if label not in self.map:
-                print(f"add {label} to map at {pos_glb} at {rospy.Time.now() - self.t0:.1f} sec")
-                self.map[label] = pos_glb
-            else:
-                self.map[label] = pos_glb * 0.1 + self.map[label] * 0.9  # low-pass
-
     def reach_goal_with_direction(self, goal_pose, offset):
         """reach `goal_pose + offset` first and then `goal_pose`.
         Note: `goal_pose` is w.r.t. the map frame and offset is w.r.t. the arm_base frame
         """
         # reach pre-goal (goal_pose + offset)
-        vec = transform_vec(self.tf_buf, self.coord_map, self.coord_ee_goal, Vector3(*offset))
+        vec = transform_vec(
+            self.tf_buf, self.coord_map, self.coord_ee_goal, Vector3(*offset)
+        )
         goal_pre = translate(goal_pose, vec)
-        ee_goal = transform_pose(self.tf_buf, self.coord_arm_base, self.coord_map, goal_pre)
-        self.arm.move_to_poses([ee_goal])
+        ee_goal_pre = transform_pose(
+            self.tf_buf, self.coord_arm_base, self.coord_map, goal_pre
+        )
+        self.arm.move_to_poses([ee_goal_pre])
 
+        rospy.sleep(0.5)
+        constraints = Constraints()
         oc = OrientationConstraint()
         oc.header.frame_id = self.coord_arm_base
         oc.link_name = self.arm.arm_group.get_end_effector_link()
-        oc.orientation = ee_goal.orientation
+        oc.orientation = ee_goal_pre.orientation
         oc.absolute_x_axis_tolerance = 0.15  # -0.15 ~ +0.15 rad 偏差
         oc.absolute_y_axis_tolerance = 0.15
         oc.absolute_z_axis_tolerance = 0.15
@@ -223,13 +211,21 @@ class Demo:
         constraints.orientation_constraints.append(oc)
         self.arm.arm_group.set_path_constraints(constraints)
 
-        ee_goal = transform_pose(self.tf_buf, self.coord_arm_base, self.coord_map, goal_pose)
+        ee_goal = transform_pose(
+            self.tf_buf, self.coord_arm_base, self.coord_map, goal_pose
+        )
         self.arm.move_to_poses([ee_goal])
+        # self.gripper_ctl(True)
+        # rospy.sleep(0.5)
+        # self.arm.move_to_poses([ee_goal_pre])
+        # self.gripper_ctl(False)
         self.arm.arm_group.clear_path_constraints()
 
     def approach(self, goal_pose, offset):
         # reach pre-goal (goal_pose + offset)
-        vec = transform_vec(self.tf_buf, self.coord_map, self.coord_ee_goal, Vector3(*offset))
+        vec = transform_vec(
+            self.tf_buf, self.coord_map, self.coord_ee_goal, Vector3(*offset)
+        )
         goal_pre = translate(goal_pose, vec)
 
         T_g2w = Pose2Mat(goal_pre)  # goal w.r.t. world
@@ -253,7 +249,11 @@ class Demo:
                 break
             # observe
             x0 = self.chas.pose2d
-            z0 = z0 + (x0 - x[:3]) * self.cart_mpc.dt if np.linalg.norm(z0) < 0.5 else np.zeros(3)
+            z0 = (
+                z0 + (x0 - x[:3]) * self.cart_mpc.dt
+                if np.linalg.norm(z0) < 0.5
+                else np.zeros(3)
+            )
             print(f"error: {x0 - x[:3]}")
             # solve
             u = self.cart_mpc.solve(x0, z0, x[:3])
@@ -278,7 +278,7 @@ class Demo:
         """aprroach to pre-grasp (goal_pose + offset) and then grasp"""
         self.gripper_ctl(False)
         self.reach_goal_with_direction(goal_pose, offset)
-        self.gripper_ctl(True)
+        # self.gripper_ctl(True)
         return
 
     def place_goal(self, goal_pose, offset):
@@ -291,67 +291,58 @@ class Demo:
         """authenticate arm executation for goal pose (ask for 'enter' in terminal)
         user can check the goal pose ("locobot/ee_goal", "TransformStamped") in rviz
         """
-        if input(f"Confirm {description} with Enter:") != "":
+        if input(f"Confirm '{description}' with Enter:") != "":
             print("aborted")
             exit(1)
         return
 
     def grasp_mask(self, rgb, cld, mask):
         """grasp given object defined by `mask`"""
-        hd = Header(frame_id=self.coord_cam, stamp=rospy.Time.now())
-        fds = [
-            PointField("x", 0, PointField.FLOAT32, 1),
-            PointField("y", 4, PointField.FLOAT32, 1),
-            PointField("z", 8, PointField.FLOAT32, 1),
-            PointField("r", 12, PointField.FLOAT32, 1),
-            PointField("g", 16, PointField.FLOAT32, 1),
-            PointField("b", 20, PointField.FLOAT32, 1),
-        ]
-        msg_pc2 = pc2.create_cloud(hd, fds, np.reshape(np.concatenate([cld, rgb], axis=-1), (-1, 6)))
-        msg = GraspInferRequest(mask=self.bridge.cv2_to_imgmsg(mask, encoding="mono8"), cloud=msg_pc2)
+        mask = (cld[..., 2] > 0) & (mask > 0)
+        rgbcld = np.concatenate([cld, rgb / 255.0], axis=-1)[mask]
         t0 = rospy.Time.now()
-        resp: GraspInferResponse = self.grasp_det(msg)
-        grasps = resp.pose
-        if not resp.result or not len(grasps):
+        resp: AnygraspResponse = self.anygrasp_proxy(
+            points=np.round(rgbcld, 4).tolist()
+        )
+        if not resp.grasps:
             return
         print(f"grasps generated ({(rospy.Time.now() - t0).to_sec():.1f} sec)")
         # `goal` is in the same link with `depth`
-        goal = self._filt_grps(grasps)
+        goal = Mat2Pose(resp.grasps[0] @ np.diag([1, -1, -1, 1]))
         goal = transform_pose(self.tf_buf, self.coord_map, self.coord_cam, goal)
-        self.grasp_goal(goal)
+        self.tf_spub.sendTransform(
+            TransformStamped(
+                header=Header(stamp=rospy.Time.now(), frame_id=self.coord_map),
+                child_frame_id=self.coord_ee_goal,
+                transform=Transform(
+                    translation=goal.position, rotation=goal.orientation
+                ),
+            )
+        )
+        print("grasp goal published")
+        self.authenticate("grasp goal")
+        self.grasp_goal(goal, offset=[-0.08, 0, 0])
 
-    def _filt_grps(self, grasps: PoseArray):
-        # TODO: get best grasp as goal
-        goal = grasps[0]
-        return goal
-
-    def _get_mask(self, rgb, prompt: str):
+    def get_mask(self, rgb, prompt: str):
         """call segmentation service to get mask of `prompt`"""
         cv2.imwrite(
-            os.path.join(os.path.dirname(__file__), f"mask/{prompt}_input.png"), cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+            os.path.join(os.path.dirname(__file__), f"cache/{prompt}_input.png"),
+            cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR),
         )
-        resp: GroundedSam2InferResponse = self.seg_det(prompt, self.bridge.cv2_to_imgmsg(rgb, encoding="rgb8"))
-        if not resp.result:
+        resp: GsamResponse = self.gsam_proxy(image=rgb, prompt=prompt)
+        if not resp.masks:
+            print("no object detected.")
             return None
-        for i in range(len(resp.masks)):
-            mask = self.bridge.imgmsg_to_cv2(resp.masks[i], desired_encoding="mono8")
-            cv2.imwrite(os.path.join(os.path.dirname(__file__), f"mask/{prompt}_{i}.png"), mask.astype(np.uint8))
-        mask = self._filt_masks(prompt, resp)
-        if mask is not None:
-            cv2.imwrite(os.path.join(os.path.dirname(__file__), f"mask/{prompt}_output.png"), mask.astype(np.uint8))
-        return mask
-
-    def _filt_masks(self, prompt, resp: GroundedSam2InferResponse):
-        """filter with rules"""
-        masks = [self.bridge.imgmsg_to_cv2(m, desired_encoding="mono8") for m in resp.masks]
-        if "handle" not in prompt:
-            return masks[0]
-
-        boxes = np.array(resp.bounding_boxes, dtype=int).reshape((-1, 4)).tolist()
-        print(boxes)
-        box = min([box for box in boxes if box[1] >= 20], key=lambda box: box[1])
-        idx = boxes.index(box)
-        return masks[idx]
+        masks = [np.array(mask, dtype=np.uint8) for mask in resp.masks]
+        for mask, label, conf in zip(masks, resp.labels, resp.confidences):
+            cv2.imwrite(
+                os.path.join(
+                    os.path.dirname(__file__), f"cache/mask_{label}_{conf:.3f}.png"
+                ),
+                mask,
+            )
+        best = np.argmax(resp.confidences)
+        return masks[best]
 
     def on_rec_img(self, msg: Image):
         with self.lock_rgb:
@@ -359,7 +350,9 @@ class Demo:
 
     def on_rec_depth(self, msg: Image):
         with self.lock_dep:
-            self.img_dep = self.bridge.imgmsg_to_cv2(msg, desired_encoding="32FC1") / 1000.0
+            self.img_dep = (
+                self.bridge.imgmsg_to_cv2(msg, desired_encoding="32FC1") / 1000.0
+            )
             self.cld, _ = reconstruct(self.img_dep, self.cam_intrin)
 
     def demo_goal(self, path_save, obj_name: str, op_name: str):
@@ -369,7 +362,9 @@ class Demo:
 
         print("Now, manually set the robot arm to the goal pose.")
         print("Do NOT move camera during that process.")
-        print("When you are done, press <Enter> to confirm, otherwise to abort> ", end="")
+        print(
+            "When you are done, press <Enter> to confirm, otherwise to abort> ", end=""
+        )
 
         if input() != "":
             print("demo grasp aborted.")
@@ -379,7 +374,9 @@ class Demo:
         offset = np.round(offset, 3)
 
         # get goal pose (in coord_targ)
-        pose_targ2goal = transform_pose(self.tf_buf, self.coord_gripper, self.coord_cam, pose_targ2cam)
+        pose_targ2goal = transform_pose(
+            self.tf_buf, self.coord_gripper, self.coord_cam, pose_targ2cam
+        )
 
         T = Pose2Mat(pose_targ2goal)
         pose = Mat2Pose(np.linalg.inv(T))
@@ -389,18 +386,29 @@ class Demo:
         # save to output_file
         with open(path_save, "r") as f:
             content = json.load(f)
-        content[obj_name] = {"type": op_name, "offset": list(offset), "goal_pose": [*pos, *rot]}
+        content[obj_name] = {
+            "type": op_name,
+            "offset": list(offset),
+            "goal_pose": [*pos, *rot],
+        }
         with open(path_save, "w") as f:
             json.dump(content, f, indent=4)
         print(f"write goal pose w.r.t. '{self.coord_targ}' to {path_save}")
 
 
-if __name__ == "__main__":
+def demo1():
+    """an One-Shot Grasp-and-Place demo that shows how to use the API to control the robot to grasp/place objects with given goal poses."""
     rospy.init_node("demo", anonymous=True)
-    parser = argparse.ArgumentParser(description="Control Locobot to grasp/place objects.")
+    parser = argparse.ArgumentParser(
+        description="Control Locobot to grasp/place objects."
+    )
     # positional argument
-    parser.add_argument("operation", choices=["grasp", "place"], help="either grasp or place")
-    parser.add_argument("object_name", help="name of the object, e.g. cabinet, handle, etc.")
+    parser.add_argument(
+        "operation", choices=["grasp", "place"], help="either grasp or place"
+    )
+    parser.add_argument(
+        "object_name", help="name of the object, e.g. cabinet, handle, etc."
+    )
     # optional argument
     parser.add_argument("--demo", action="store_true")
     args = parser.parse_args()
@@ -423,7 +431,7 @@ if __name__ == "__main__":
 
     objs_grasp = [key for key in content.keys() if content[key]["type"] == "grasp"]
     objs_place = [key for key in content.keys() if content[key]["type"] == "place"]
-    print(f"objs_grasp: {objs_grasp}; objs_place: {objs_place}")
+    print(f"objs_grasp: {objs_grasp}\n; objs_place: {objs_place}")
 
     op = content[obj_name]["type"]
     offset = np.array(content[obj_name]["offset"])
@@ -444,8 +452,31 @@ if __name__ == "__main__":
     goal = transform_pose(demo.tf_buf, demo.coord_map, demo.coord_ee_goal)
     if op == "grasp":
         demo.grasp_goal(goal, offset)
+        # demo.arm.move_joints(np.array([0.0, -1.1, 1.55, 0.0, -0.5, 0.0]))
     else:
         demo.place_goal(goal, offset)
 
-    print("done")
-    rospy.spin()
+    print("\n===== done =====")
+
+
+def demo2():
+    """a Zero-Shot Grasp demo that shows how to call the perception API (segmentation and grasp detection) and grasp the target object."""
+    rospy.init_node("demo", anonymous=True)
+    parser = argparse.ArgumentParser(description="Control Locobot to grasp objects.")
+    parser.add_argument(
+        "object_name", help="name of the object, e.g. cabinet, handle, etc."
+    )
+    args = parser.parse_args()
+
+    demo = Demo()
+    with demo.lock_rgb:
+        rgb = deepcopy(demo.img_rgb)
+    with demo.lock_dep:
+        cld = deepcopy(demo.cld)
+    mask = demo.get_mask(rgb, args.object_name)
+    demo.grasp_mask(rgb, cld, mask)
+    print("\n===== done =====")
+
+
+if __name__ == "__main__":
+    demo1()

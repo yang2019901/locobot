@@ -286,7 +286,6 @@ class SkillLib:
             log += f"Turning {dir} failed with exception: \n{e}\n"
         return log
 
-    # @staticmethod
     # def gsam(cmd): ...
 
 
@@ -311,8 +310,9 @@ if __name__ == "__main__":
     sl = {fo: getattr(sl_obj, fo) for fo in dir(SkillLib) if not fo.startswith("__")}
 
     planner = VLMPlanner(skill_lib=sl, local=False)
-    breakpoint()
     cmds = planner.plan("come close to put gum bottle on the realsense box")
+    print(cmds)
+    breakpoint()
 
     for cmd in cmds:
         sl[cmd[0]]()
