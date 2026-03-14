@@ -58,7 +58,7 @@ class LocobotChassis:
         self.tf_buf = tf2_ros.Buffer()
         self.tf_lstn = tf2_ros.TransformListener(self.tf_buf)
 
-        rospy.Timer(rospy.Duration(0.05), self.publish_pose)
+        self.timer = rospy.Timer(rospy.Duration(0.05), self.publish_pose)
         while self.pose2d is None and not rospy.is_shutdown():
             rospy.sleep(0.05)
         rospy.loginfo("LocobotChassis initialized")

@@ -278,7 +278,7 @@ class Demo:
         """aprroach to pre-grasp (goal_pose + offset) and then grasp"""
         self.gripper_ctl(False)
         self.reach_goal_with_direction(goal_pose, offset)
-        # self.gripper_ctl(True)
+        self.gripper_ctl(True)
         return
 
     def place_goal(self, goal_pose, offset):
