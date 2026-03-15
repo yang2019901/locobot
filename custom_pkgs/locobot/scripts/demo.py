@@ -92,7 +92,7 @@ def reconstruct(depth: np.ndarray, cam_intrin: np.ndarray, rgb=None):
     return cld, rgb_cld
 
 
-def Pose2Mat(pose: Pose):
+def Pose2Mat(pose: Pose)->np.ndarray:
     pos = ToArray(pose.position)
     rot = ToArray(pose.orientation)
     euler = tf.transformations.euler_from_quaternion(rot)
@@ -100,7 +100,7 @@ def Pose2Mat(pose: Pose):
     return T
 
 
-def Mat2Pose(T: np.ndarray):
+def Mat2Pose(T: np.ndarray)->Pose:
     pos = tf.transformations.translation_from_matrix(T)
     angles = tf.transformations.euler_from_matrix(T)
     rot = tf.transformations.quaternion_from_euler(*angles)
