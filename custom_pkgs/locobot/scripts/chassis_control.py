@@ -164,21 +164,24 @@ class LocobotChassis:
         return resp
 
     def publish_pose(self, timer_event):
-        msg = Pose2D()
-        # look up `robot_base_frame` in "<locobot>/launch/move_base.launch"
-        robot_base_frame = "locobot/base_footprint"
-        map_frame = "map"
-        if not self.tf_buf.can_transform(map_frame, robot_base_frame, rospy.Time(0)):
-            rospy.logdebug(f"Cannot transform {map_frame} to {robot_base_frame}")
-            return
+        try:
+            msg = Pose2D()
+            # look up `robot_base_frame` in "<locobot>/launch/move_base.launch"
+            robot_base_frame = "locobot/base_footprint"
+            map_frame = "map"
+            if not self.tf_buf.can_transform(map_frame, robot_base_frame, rospy.Time(0)):
+                rospy.logdebug(f"Cannot transform {map_frame} to {robot_base_frame}")
+                return
 
-        trans_stamped: TransformStamped = self.tf_buf.lookup_transform(map_frame, robot_base_frame, rospy.Time(0))
-        quat = trans_stamped.transform.rotation
-        msg.x = trans_stamped.transform.translation.x
-        msg.y = trans_stamped.transform.translation.y
-        msg.theta = tf.transformations.euler_from_quaternion([quat.x, quat.y, quat.z, quat.w])[2]
-        self.pub_curr.publish(msg)
-        self.pose2d = (msg.x, msg.y, msg.theta)
+            trans_stamped: TransformStamped = self.tf_buf.lookup_transform(map_frame, robot_base_frame, rospy.Time(0))
+            quat = trans_stamped.transform.rotation
+            msg.x = trans_stamped.transform.translation.x
+            msg.y = trans_stamped.transform.translation.y
+            msg.theta = tf.transformations.euler_from_quaternion([quat.x, quat.y, quat.z, quat.w])[2]
+            self.pub_curr.publish(msg)
+            self.pose2d = (msg.x, msg.y, msg.theta)
+        except:
+            pass
 
 
 if __name__ == "__main__":

@@ -75,6 +75,13 @@ class SkillLib:
             )
             log += "Goal pose published and transformed.\n"
 
+            x1, y1 = self.robo.chas.pose2d[:2]
+            x2, y2 = goal.position.x, goal.position.y
+            dist = np.sqrt((x1 - x2) ** 2 + (y1 - y2) ** 2)
+            log += f"Distance to target: {dist:.2f} m.\n"
+            if dist > 0.6:
+                raise RuntimeError("Target is far away, navigating closer before grasping.\n")
+
             self.robo.grasp_goal(goal, offset)
             log += "Grasp action executed.\n"
             self.robo.arm.move_joints(np.array([0.0, -1.1, 1.55, 0.0, -0.5, 0.0]))
@@ -120,6 +127,13 @@ class SkillLib:
             )
             log += "Goal pose published and transformed.\n"
 
+            x1, y1 = self.robo.chas.pose2d[:2]
+            x2, y2 = goal.position.x, goal.position.y
+            dist = np.sqrt((x1 - x2) ** 2 + (y1 - y2) ** 2)
+            log += f"Distance to target: {dist:.2f} m.\n"
+            if dist > 0.6:
+                raise RuntimeError("Target is far away, navigating closer before grasping.\n")
+
             self.robo.place_goal(goal, offset)
             log += "Place action executed.\n"
         except:
@@ -128,7 +142,7 @@ class SkillLib:
         return log
 
     def nav(self, obj: str):
-        """Navigate robot to given object.
+        """Navigate robot to given object. Only use this when the target is in view but too far to grasp/place.
         Args:
             obj: str, supported list: [{}]
         Returns:
@@ -154,8 +168,10 @@ class SkillLib:
             heading = M[:3, 2]  # z axis
             theta = np.arctan2(heading[1], heading[0])
             x, y = M[:2, 3]
-            print(f"Transformed pose: x={x}, y={y}, theta={theta}")
-            log += f"Got navigation target ({x}, {y}, {theta}).\n"
+            x += -0.15 * np.cos(theta)
+            y += -0.15 * np.sin(theta)
+            print(f"Transformed pose: x={x:.2f}, y={y:.2f}, theta={theta:.2f}")
+            log += f"Got navigation target ({x:.2f}, {y:.2f}, {theta:.2f}).\n"
             self.robo.chas.reach(x, y, theta)
             log += f"Navigation to {obj} executed.\n"
         except:
@@ -219,7 +235,7 @@ class SkillLib:
         return log
 
     def turn(self, dir: str):
-        """Turn robot to given direction (60 degrees, close-loop).
+        """Rotate robot chassis left/right by 60 degrees. Can be used to find an object when it is out of view.
         Args:
             dir: str, supported list: [left, right]
         Returns:
@@ -292,7 +308,7 @@ class VLMAgent:
         skill_entries = [
             VLMAgent.skill_temp.format(name, _indent(_dedent(func.__doc__)))
             for name, func in SkillLib.__dict__.items()
-            if name in {"grasp", "place", "turn"}
+            if name in {"grasp", "place", "turn", "nav"}
         ]
         tmp = _indent("\n".join(skill_entries))
         self.skills_descr = self.skills_descr.format(tmp)
@@ -303,7 +319,7 @@ class VLMAgent:
             {}
             </log>
             Analyze the execution result and re-plan commands to finish the task:
-            !) if the execution is successful and the task is not finished, generate next command sequence to continue the task;
+            1) if the execution is successful and the task is not finished, generate next command sequence to continue the task;
             2) if the execution is successful and the task is finished, return an empty string;
             3) if the execution fails, re-plan the commands to fix the issue. (e.g. if you think it is by chance, retry the same command; otherwise, try another command to adjust your plan)
         """
@@ -355,6 +371,7 @@ class VLMAgent:
             completion = self.client.chat.completions.create(
                 model=self.model_name,
                 messages=history,
+                temperature=0.2,
             )
             print(f"[assistant]\n{_indent(completion.choices[0].message.content)}")
             cmds = self.parse(completion)
@@ -365,7 +382,7 @@ class VLMAgent:
             exec_log = ""
             try:
                 op, args = cmds[0]
-                # self.skill_lib.robo.authenticate(" ".join(cmds[0]))
+                self.skill_lib.robo.authenticate(" ".join(cmds[0]))
                 exec_log += getattr(self.skill_lib, op)(args)
             except:
                 stack_trace = traceback.format_exc()
@@ -379,7 +396,7 @@ class VLMAgent:
             history.append({"role": "user", "content": prompt_nxt})
             print(f"[user]\n{_indent(prompt_nxt)}")
 
-            rospy.sleep(5)  # wait for a while before next round
+            # rospy.sleep(5)  # wait for a while before next round
         print("\n----- Task Finished -----")
 
 
@@ -392,10 +409,6 @@ SkillLib.nav.__doc__ = SkillLib.nav.__doc__.format(", ".join(all_objs))
 
 
 if __name__ == "__main__":
-    rospy.init_node("vlm")
-
-    robo_iface = Demo()
-
     parser = argparse.ArgumentParser(
         description="VLM task planner that calls atomic skills"
     )
@@ -406,8 +419,11 @@ if __name__ == "__main__":
         "--debug", type=int, default=-1, help="Debug level, bigger means more info."
     )
     args = parser.parse_args()
+
+    rospy.init_node("vlm")
+    robo_iface = Demo()
     pose_estim = PoseEstimator(args)
 
     sl_obj = SkillLib(robo_iface, pose_estim)
     planner = VLMAgent(skill_lib=sl_obj, local=True)
-    planner.agent("put glue bottle on the pen box", max_rounds=20)
+    planner.agent("put handcream on the maxsun box", max_rounds=20)
