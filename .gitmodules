@@ -34,3 +34,9 @@
 [submodule "kobuki"]
 	path = kobuki
 	url = https://github.com/SergeyuiL/kobuki.git
+[submodule "custom_pkgs/apriltag"]
+	path = custom_pkgs/apriltag
+	url = https://github.com/AprilRobotics/apriltag.git
+[submodule "custom_pkgs/locobot/scripts/GMatch"]
+	path = custom_pkgs/locobot/scripts/GMatch
+	url = https://github.com/yang2019901/GMatch.git
