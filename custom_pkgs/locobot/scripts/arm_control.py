@@ -264,13 +264,13 @@ class LocobotArm:
             else (2, "execution failed")
         )
 
-    def move_joints(self, target_joints: np.ndarray) -> bool:
+    def move_joints(self, target_joints: np.ndarray, wait=True) -> bool:
         self.arm_group.stop()
         self.arm_group.clear_pose_targets()
         self.arm_group.set_start_state_to_current_state()
         self.arm_group.set_joint_value_target(target_joints)
 
-        self.arm_group.go(wait=True)
+        self.arm_group.go(wait=wait)
         # print(f"Move arm to joints {target_joints}")
 
     def hold(self, msg: SetBoolRequest):

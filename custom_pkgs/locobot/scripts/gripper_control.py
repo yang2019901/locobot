@@ -66,11 +66,11 @@ def set_reg(motor: str, reg: str, val: int):
 
 def initialize_motor_pids():
     set_gain("waist", 1920, 100, 0, 1000, 2400, 500, 50)
-    set_gain("shoulder", 1920, 100, 3000, 400, 800, 500, 50)
+    set_gain("shoulder", 1920, 100, 0, 400, 800, 500, 50)
     set_gain("elbow", 1920, 100, 0, 1600, 1200, 800, 0)
     set_gain("forearm_roll", 1920, 100, 0, 500, 2000, 500, 0)
     set_gain("wrist_angle", 1920, 100, 0, 100, 2000, 0, 0)
-    set_gain("wrist_rotate", 1000, 100, 3600, 0, 1000, 0, 0)
+    set_gain("wrist_rotate", 1000, 100, 0, 0, 1000, 0, 0)
     set_reg("waist", "Profile_Acceleration", 6)
     set_reg("shoulder", "Profile_Acceleration", 6)
     set_reg("elbow", "Profile_Acceleration", 6)

@@ -34,6 +34,7 @@ class PID:
 
 
 def remap_angle(angle: float, center=0.0) -> float:
+    """ remap angle to [center - pi, center + pi] """
     offset = center - np.pi
     return (angle - offset) % (2 * np.pi) + offset
 
@@ -154,6 +155,27 @@ class LocobotChassis:
         self.pub_vel.publish(Twist())
         rospy.logdebug("Reached position: ({:.2f}, {:.2f}, {:.2f})".format(*self.pose2d))
 
+    def nav(self, x:float, y:float, theta:float, wait=True):
+        """send navigation goal to move_base, collision-free"""
+        goal = PoseStamped()
+        goal.header.frame_id = "map"
+        goal.pose.position.x = x
+        goal.pose.position.y = y
+        quat = tf.transformations.quaternion_from_euler(0, 0, theta)
+        goal.pose.orientation = Quaternion(*quat)
+        self.pub_goal.publish(goal)
+    
+    def wait_for_nav(self):
+        while not rospy.is_shutdown():
+            res = rospy.wait_for_message("/locobot/move_base/result", MoveBaseActionResult)
+            if res.status.status == 3:  # SUCCEEDED
+                break
+            elif res.status.status in [4, 5, 6, 7, 8]:  # ABORTED, REJECTED, PREEMPTED, etc.
+                raise RuntimeError(f"Navigation failed with status {res.status.status}")
+            else:
+                rospy.logdebug(f"Navigation status: {res.status.status}, waiting...")
+        rospy.loginfo("Navigation succeeded")
+    
     def on_chassis_control(self, req: SetPose2DRequest):
         self.reach(req.x, req.y)
         self.rotate_to(req.theta)
@@ -178,10 +200,14 @@ class LocobotChassis:
             msg.x = trans_stamped.transform.translation.x
             msg.y = trans_stamped.transform.translation.y
             msg.theta = tf.transformations.euler_from_quaternion([quat.x, quat.y, quat.z, quat.w])[2]
-            self.pub_curr.publish(msg)
+            if not rospy.is_shutdown():
+                self.pub_curr.publish(msg)
             self.pose2d = (msg.x, msg.y, msg.theta)
-        except:
+        except rospy.ROSException:
             pass
+        except Exception:
+            import traceback
+            traceback.print_exc()
 
 
 if __name__ == "__main__":
