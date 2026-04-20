@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import os, cv2, json
+import os.path as osp
 import argparse
 import numpy as np
 from copy import deepcopy
@@ -10,8 +11,8 @@ import tf.transformations
 import rospy
 from cv_bridge import CvBridge
 
-from std_srvs.srv import SetBool
-from std_msgs.msg import Header
+from std_srvs.srv import *
+from std_msgs.msg import *
 
 from sensor_msgs.msg import Image, CameraInfo, PointCloud2, PointField
 import sensor_msgs.point_cloud2 as pc2
@@ -27,7 +28,8 @@ from locobot.srv import *
 from arm_control import LocobotArm
 from camera_control import LocobotCamera
 from chassis_control import LocobotChassis
-from wbc import WBC, CartMPC
+from wbc import WBC
+from pose_estimate import PoseEstimator
 
 import client
 from data_models import AnygraspRequest, AnygraspResponse, GsamRequest, GsamResponse
@@ -92,7 +94,7 @@ def reconstruct(depth: np.ndarray, cam_intrin: np.ndarray, rgb=None):
     return cld, rgb_cld
 
 
-def Pose2Mat(pose: Pose)->np.ndarray:
+def Pose2Mat(pose: Pose) -> np.ndarray:
     pos = ToArray(pose.position)
     rot = ToArray(pose.orientation)
     euler = tf.transformations.euler_from_quaternion(rot)
@@ -100,7 +102,7 @@ def Pose2Mat(pose: Pose)->np.ndarray:
     return T
 
 
-def Mat2Pose(T: np.ndarray)->Pose:
+def Mat2Pose(T: np.ndarray) -> Pose:
     pos = tf.transformations.translation_from_matrix(T)
     angles = tf.transformations.euler_from_matrix(T)
     rot = tf.transformations.quaternion_from_euler(*angles)
@@ -153,6 +155,9 @@ class Demo:
         self.cam = LocobotCamera(serving=False)
         self.chas = LocobotChassis(serving=False)
         self.gripper_ctl = rospy.ServiceProxy("/locobot/gripper_control", SetBool)
+
+        path_urdf = osp.join(osp.dirname(osp.abspath(__file__)), "../urdf/locobot.urdf")
+        self.wbc = WBC(path_urdf=path_urdf)
         # perception API
         self.anygrasp_proxy = client.ServiceProxy(
             AnygraspRequest, AnygraspResponse, "192.168.1.5", 8002
@@ -221,70 +226,26 @@ class Demo:
         # self.gripper_ctl(False)
         self.arm.arm_group.clear_path_constraints()
 
-    def approach(self, goal_pose, offset):
-        # reach pre-goal (goal_pose + offset)
-        vec = transform_vec(
-            self.tf_buf, self.coord_map, self.coord_ee_goal, Vector3(*offset)
-        )
-        goal_pre = translate(goal_pose, vec)
-
-        T_g2w = Pose2Mat(goal_pre)  # goal w.r.t. world
-
-        if not hasattr(self, "mpc"):
-            self.wbc = WBC()
-            self.cart_mpc = CartMPC(mpc_horizon=20, dt=0.05, vmax=0.2, wmax=0.2)
-
-        x0 = np.array([*self.chas.pose2d, *self.arm.joint_states])
-        x = self.wbc.solve(x0, T_g2w)
-
+    def get_nav_goal(self, goal_pose: Pose):
+        """ return (x, y, theta) for chassis navigation s.t. arm can reach `goal_pose` (w.r.t. map frame) """
+        T_g2w = Pose2Mat(goal_pose)  # goal w.r.t. world
+        x = self.wbc.solve(T_g2w, x0=[0, 0, 0, 0, -0.4, 0.8, 0, -0.3, 0])
         print(f"desired chassis pose: {x[:3]}; desired arm joints: {x[3:]}")
+        return x[:3]
 
-        rate = rospy.Rate(1 / self.cart_mpc.dt)
-        k = 0
-        cnt = 0
-        z0 = np.zeros(3)
-        while cnt < 5:
-            if k * self.cart_mpc.dt > 10:
-                print("timeout.")
-                break
-            # observe
-            x0 = self.chas.pose2d
-            z0 = (
-                z0 + (x0 - x[:3]) * self.cart_mpc.dt
-                if np.linalg.norm(z0) < 0.5
-                else np.zeros(3)
-            )
-            print(f"error: {x0 - x[:3]}")
-            # solve
-            u = self.cart_mpc.solve(x0, z0, x[:3])
-            # control
-            self.chas.pub_vel.publish(Twist(Vector3(u[0], 0, 0), Vector3(0, 0, u[1])))
-            # update loop counter
-            k += 1
-            cnt = 0 if np.linalg.norm(x0 - x[:3]) > 0.05 else cnt + 1
-            rate.sleep()
-        print(f"final chassis pose: {x0}")
-        self.chas.pub_vel.publish(Twist())  # stop chassis
-
-        self.arm.move_joints(x[3:])
-
-        self.arm.arm_group.stop()
-
-        # clear constraint
-        self.arm.arm_group.clear_path_constraints()
-        return
-
-    def grasp_goal(self, goal_pose, offset):
+    def grasp_goal(self, goal_pose: Pose, offset):
         """aprroach to pre-grasp (goal_pose + offset) and then grasp"""
         self.gripper_ctl(False)
         self.reach_goal_with_direction(goal_pose, offset)
         self.gripper_ctl(True)
         return
 
-    def place_goal(self, goal_pose, offset):
+    def place_goal(self, goal_pose: Pose, offset):
         """approach to pre-place (goal_pose + offset) and then place"""
         self.reach_goal_with_direction(goal_pose, offset)
         self.gripper_ctl(False)
+        rospy.sleep(0.5)
+        self.arm.sleep(SetBoolRequest(True))
         return
 
     def authenticate(self, description: str = ""):
@@ -410,20 +371,25 @@ def demo1():
         "object_name", help="name of the object, e.g. cabinet, handle, etc."
     )
     # optional argument
-    parser.add_argument("--demo", action="store_true")
+    parser.add_argument(
+        "--demo",
+        action="store_true",
+        help="run demo goal wizard to save goal pose to json file",
+    )
     args = parser.parse_args()
 
-    obj_name = args.object_name
+    obj_name: str = args.object_name
+    op: str = args.operation
+    is_demo: bool = args.demo
 
-    # reset_arm()
     demo = Demo()
 
     path_gpose = "./goal_pose.json"  # path to goal_pose.json
     if not os.path.exists(path_gpose):
         json.dump({}, path_gpose)
 
-    if args.demo:
-        demo.demo_goal(path_gpose, obj_name, args.operation)
+    if is_demo:
+        demo.demo_goal(path_gpose, obj_name, op)
         exit(0)
 
     with open(path_gpose, "r") as f:

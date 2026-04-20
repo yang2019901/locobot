@@ -413,7 +413,7 @@ if __name__ == "__main__":
         description="VLM task planner that calls atomic skills"
     )
     parser.add_argument(
-        "--minL", type=int, default=8, help="Min length of matches to use."
+        "--minL", type=int, default=12, help="Min length of matches to use."
     )
     parser.add_argument(
         "--debug", type=int, default=-1, help="Debug level, bigger means more info."
@@ -426,4 +426,4 @@ if __name__ == "__main__":
 
     sl_obj = SkillLib(robo_iface, pose_estim)
     planner = VLMAgent(skill_lib=sl_obj, local=True)
-    planner.agent("put handcream on the maxsun box", max_rounds=20)
+    planner.agent("put repellent on the maxsun box", max_rounds=20)

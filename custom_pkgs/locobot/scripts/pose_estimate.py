@@ -13,6 +13,7 @@ from copy import deepcopy
 import matplotlib.pyplot as plt
 import pickle
 import argparse
+import json
 
 import rospy
 import tf, tf2_ros
@@ -22,6 +23,7 @@ from sensor_msgs.msg import CameraInfo, Image
 from geometry_msgs.msg import TransformStamped, Vector3, Quaternion
 
 from GMatch import gmatch
+
 
 
 class PoseEstimator:
@@ -91,7 +93,7 @@ class PoseEstimator:
         if self.imgs_src is None:
             return -1, "Source images are None, maybe not loaded."
 
-        self.mat_m2c = None
+        self.M_m2c = None
 
         D_near = 1e-2
         D_far = 1
@@ -123,7 +125,7 @@ class PoseEstimator:
             )
 
         self.M_m2c = match_data.mat_m2c
-        pos, rot = gmatch.util.mat2pose(match_data.mat_m2c)
+        pos, rot = gmatch.util.mat2pose(self.M_m2c)
 
         msg = TransformStamped()
         msg.header.stamp = rospy.Time.now()
@@ -135,15 +137,12 @@ class PoseEstimator:
         self.tf_pub.sendTransform(msg)
         return 0, "success"
 
-    def run(self):
+    def run(self, M_ee2m=None):
         r = rospy.Rate(3)
         while not rospy.is_shutdown():
             self.run_once()
 
-            if self.M_m2c is not None:
-                t = [0.028, -0.151, 0.406]
-                q = [-0.562, 0.537, -0.472, -0.415]
-                M_ee2m = gmatch.util.pose2mat([t, q])
+            if M_ee2m is not None and self.M_m2c is not None:
                 M_ee2c = self.M_m2c @ M_ee2m
                 R, t = M_ee2c[:3, :3], M_ee2c[:3, 3]
                 K = self.cam_intrin
@@ -189,6 +188,17 @@ if __name__ == "__main__":
         "--debug", type=int, default=-1, help="Debug level, bigger means more info."
     )
     args = parser.parse_args()
+    try:
+        file_name = os.path.basename(args.path_object)
+        obj_name = ".".join(file_name.split(".")[:-1])
+        with open("./goal_pose.json", "r") as f:
+            content = json.load(f)
+        pose = content[obj_name]["goal_pose"]
+        M_ee2m = gmatch.util.pose2mat([pose[:3], pose[3:]])
+    except:
+        rospy.logwarn("Failed to load goal pose, will not visualize end-effector axes.")
+        M_ee2m = None
+
     estim = PoseEstimator(args)
     estim.reset_obj(args.path_object)
-    estim.run()
+    estim.run(M_ee2m=M_ee2m)
